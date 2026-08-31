@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Encrypt plaintext pages from public-encrypted/_src/ into public-encrypted/
+# before the commit is created, and refuse to let plaintext or the master
+# secret reach this PUBLIC repository.
+set -euo pipefail
+export LC_ALL=C
+
+# Hooks run non-interactively, so ~/.zshrc is never sourced and ~/.local/bin
+# (where node lives on this machine) would otherwise be missing from PATH.
+export PATH="$HOME/.local/bin:$PATH"
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+SRC="public-encrypted/_src"
+OUT="public-encrypted"
+MANIFEST=".encrypted-manifest"
+
+# ---------------------------------------------------------------- guard 1
+# Block plaintext / secrets even if forced past .gitignore with `git add -f`.
+staged="$(git diff --cached --name-only)"
+if blocked="$(printf '%s\n' "$staged" \
+      | grep -E '^(public-encrypted/_src/|\.env$|\.env\.|\.staticrypt\.json$)')"; then
+  echo "COMMIT BLOCKED - these must never enter a public repo:" >&2
+  printf '  %s\n' $blocked >&2
+  echo "Unstage with: git restore --staged <path>" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------- reminder
+# "Client-identifying" cannot be detected reliably, so this warns, not blocks.
+# It must run BEFORE the early exit below, or it never fires when _src/ is empty.
+if outside="$(printf '%s\n' "$staged" | grep -E '\.html$' | grep -v '^public-encrypted/')"; then
+  echo "NOTE - unencrypted HTML staged outside public-encrypted/:" >&2
+  printf '  %s\n' $outside >&2
+  echo "Confirm none contains client names, spend figures or account IDs." >&2
+fi
+
+# Nothing to encrypt is a valid state - let the commit through.
+[ -d "$SRC" ] || exit 0
+shopt -s nullglob
+sources=("$SRC"/*.html)
+if [ ${#sources[@]} -eq 0 ]; then exit 0; fi
+
+# ---------------------------------------------------------------- guard 2
+if [ ! -f .env ]; then
+  echo "COMMIT BLOCKED - $SRC has pages but .env (master secret) is missing." >&2
+  echo "Without it these pages cannot be encrypted, and committing them" >&2
+  echo "unencrypted would publish them. Restore .env and retry." >&2
+  exit 1
+fi
+set -a; . ./.env; set +a
+: "${STATICRYPT_PASSWORD:?STATICRYPT_PASSWORD missing from .env}"
+: "${STATICRYPT_SALT:?STATICRYPT_SALT missing from .env}"
+
+# ------------------------------------------------------------------ encrypt
+# StatiCrypt uses a random IV, so identical input yields different output on
+# every run. Re-encrypting unchanged pages would rewrite every file on every
+# commit, so only re-encrypt when the plaintext has actually changed. The
+# manifest stores a salted hash, so it reveals nothing about the plaintext.
+# staticrypt reads the salt from .staticrypt.json, and `--decrypt` REQUIRES
+# that file to exist - without it the encrypted pages cannot be recovered from
+# the command line. Regenerate it from .env so the salt stays fixed (stable
+# output) and the recovery path always works. It holds only the salt, no
+# password hash, but stays gitignored regardless.
+printf '{"salt":"%s"}\n' "$STATICRYPT_SALT" > .staticrypt.json
+
+touch "$MANIFEST"
+count=0
+for src in "${sources[@]}"; do
+  base="$(basename "$src")"
+  hash="$( { printf '%s' "$STATICRYPT_SALT"; cat "$src"; } | shasum -a 256 | awk '{print $1}' )"
+  prev="$(awk -v b="$base" '$1==b {print $2}' "$MANIFEST")"
+
+  if [ "$hash" = "$prev" ] && [ -f "$OUT/$base" ]; then
+    continue
+  fi
+
+  # Password is passed via the environment, never argv - argv is visible in ps.
+  npx --no-install staticrypt "$src" \
+      -d "$OUT" --remember false --short >/dev/null
+
+  awk -v b="$base" '$1!=b' "$MANIFEST" > "$MANIFEST.tmp"
+  mv "$MANIFEST.tmp" "$MANIFEST"
+  printf '%s %s\n' "$base" "$hash" >> "$MANIFEST"
+
+  git add "$OUT/$base"
+  echo "  encrypted: $base"
+  count=$((count+1))
+done
+
+if [ "$count" -gt 0 ]; then
+  git add "$MANIFEST"
+  echo "pre-commit: encrypted $count page(s) into $OUT/"
+fi
+
+exit 0

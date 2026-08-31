@@ -1,7 +1,25 @@
 # THIS REPO IS PUBLIC. Nothing secret or client-confidential belongs here.
+
+# Encryption master secret for StatiCrypt. Never commit.
 .env
 .env.*
+
+# Plaintext source for encrypted pages. NEVER commit - this is the
+# unencrypted original of everything in public-encrypted/.
+public-encrypted/_src/
+
+# StatiCrypt config: contains the salt and may contain a password hash.
+# A hash in a public repo enables offline brute-force. Never commit.
+.staticrypt.json
+
+# Keys and credentials
 *.pem
 *.key
+
+# Raw data
 *.csv
+
+# Toolchain
+node_modules/
+
 .DS_Store

@@ -6,6 +6,7 @@ Public GitHub Pages site, served at https://daniella-ca.github.io
 
 - `reports/` — published reports
 - `dashboards/` — published dashboards
+- `public-encrypted/` — password-protected pages (see CLAUDE.md)
 
 ## This repository is PUBLIC
 

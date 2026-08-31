@@ -1,0 +1,24 @@
+{
+  "name": "daniella-ca.github.io",
+  "version": "1.0.0",
+  "description": "Public GitHub Pages site, served at https://daniella-ca.github.io",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daniella-ca/daniella-ca.github.io.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/daniella-ca/daniella-ca.github.io/issues"
+  },
+  "homepage": "https://github.com/daniella-ca/daniella-ca.github.io#readme",
+  "devDependencies": {
+    "staticrypt": "^3.5.4"
+  }
+}
