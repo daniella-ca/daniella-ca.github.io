@@ -1,0 +1,7 @@
+# THIS REPO IS PUBLIC. Nothing secret or client-confidential belongs here.
+.env
+.env.*
+*.pem
+*.key
+*.csv
+.DS_Store
