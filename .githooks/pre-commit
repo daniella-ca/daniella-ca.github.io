@@ -15,12 +15,13 @@ cd "$ROOT"
 SRC="public-encrypted/_src"
 OUT="public-encrypted"
 MANIFEST=".encrypted-manifest"
+KEYMAP=".page-keys"
 
 # ---------------------------------------------------------------- guard 1
 # Block plaintext / secrets even if forced past .gitignore with `git add -f`.
 staged="$(git diff --cached --name-only)"
 if blocked="$(printf '%s\n' "$staged" \
-      | grep -E '^(public-encrypted/_src/|\.env$|\.env\.|\.staticrypt\.json$)')"; then
+      | grep -E '^(public-encrypted/_src/|\.env$|\.env\.|\.staticrypt\.json$|\.page-keys$)')"; then
   echo "COMMIT BLOCKED - these must never enter a public repo:" >&2
   printf '  %s\n' $blocked >&2
   echo "Unstage with: git restore --staged <path>" >&2
@@ -53,11 +54,6 @@ set -a; . ./.env; set +a
 : "${STATICRYPT_PASSWORD:?STATICRYPT_PASSWORD missing from .env}"
 : "${STATICRYPT_SALT:?STATICRYPT_SALT missing from .env}"
 
-# ------------------------------------------------------------------ encrypt
-# StatiCrypt uses a random IV, so identical input yields different output on
-# every run. Re-encrypting unchanged pages would rewrite every file on every
-# commit, so only re-encrypt when the plaintext has actually changed. The
-# manifest stores a salted hash, so it reveals nothing about the plaintext.
 # staticrypt reads the salt from .staticrypt.json, and `--decrypt` REQUIRES
 # that file to exist - without it the encrypted pages cannot be recovered from
 # the command line. Regenerate it from .env so the salt stays fixed (stable
@@ -65,27 +61,72 @@ set -a; . ./.env; set +a
 # password hash, but stays gitignored regardless.
 printf '{"salt":"%s"}\n' "$STATICRYPT_SALT" > .staticrypt.json
 
-touch "$MANIFEST"
-count=0
+touch "$MANIFEST" "$KEYMAP"
+
+# ---------------------------------------------------------------- pass 1
+# Resolve and validate EVERY page before encrypting ANY of them, so a missing
+# mapping aborts with no half-finished work staged behind it.
+todo_src=(); todo_base=(); todo_var=(); todo_hash=()
+
 for src in "${sources[@]}"; do
   base="$(basename "$src")"
-  hash="$( { printf '%s' "$STATICRYPT_SALT"; cat "$src"; } | shasum -a 256 | awk '{print $1}' )"
-  prev="$(awk -v b="$base" '$1==b {print $2}' "$MANIFEST")"
+  var="$(awk -v f="$base" '$1==f {print $2; exit}' "$KEYMAP")"
 
+  # StatiCrypt uses a random IV, so identical input yields different output on
+  # every run. Re-encrypting unchanged pages would rewrite every file on every
+  # commit, so only re-encrypt when the plaintext or its key mapping changed.
+  # The manifest stores a salted hash, so it reveals nothing about the plaintext.
+  hash="$( { printf '%s%s' "$STATICRYPT_SALT" "${var:-UNMAPPED}"; cat "$src"; } \
+           | shasum -a 256 | awk '{print $1}' )"
+  prev="$(awk -v b="$base" '$1==b {print $2}' "$MANIFEST")"
   if [ "$hash" = "$prev" ] && [ -f "$OUT/$base" ]; then
     continue
   fi
 
-  # Password is passed via the environment, never argv - argv is visible in ps.
-  npx --no-install staticrypt "$src" \
-      -d "$OUT" --remember false --short >/dev/null
+  # Fail closed. A client page must NEVER silently inherit the master password:
+  # that would hand every client the key to every other client's report.
+  if [ -z "$var" ]; then
+    echo "COMMIT BLOCKED - no password mapping for '$base'." >&2
+    echo "" >&2
+    echo "  Client-facing pages must have their own password. There is" >&2
+    echo "  deliberately no fallback to the master password." >&2
+    echo "" >&2
+    echo "  For a client page, generate one:" >&2
+    echo "    bin/new-client-password <client-slug> $base" >&2
+    echo "" >&2
+    echo "  For your own internal page, opt in explicitly:" >&2
+    echo "    echo '$base MASTER' >> $KEYMAP" >&2
+    exit 1
+  fi
+
+  if [ "$var" != "MASTER" ] && [ -z "${!var:-}" ]; then
+    echo "COMMIT BLOCKED - '$base' maps to $var, but $var is not set in .env." >&2
+    echo "  Generate it with: bin/new-client-password <client-slug>" >&2
+    echo "  Not falling back to the master password." >&2
+    exit 1
+  fi
+
+  todo_src+=("$src"); todo_base+=("$base"); todo_var+=("$var"); todo_hash+=("$hash")
+done
+
+# ---------------------------------------------------------------- pass 2
+count=0
+for i in "${!todo_src[@]}"; do
+  base="${todo_base[$i]}"; var="${todo_var[$i]}"
+
+  if [ "$var" = "MASTER" ]; then page_pw="$STATICRYPT_PASSWORD"; else page_pw="${!var}"; fi
+
+  # Password goes via the environment, never argv - argv is visible in ps.
+  # dotenv does not overwrite an already-set variable, so this wins over .env.
+  STATICRYPT_PASSWORD="$page_pw" \
+    npx --no-install staticrypt "${todo_src[$i]}" -d "$OUT" --remember false --short >/dev/null
 
   awk -v b="$base" '$1!=b' "$MANIFEST" > "$MANIFEST.tmp"
   mv "$MANIFEST.tmp" "$MANIFEST"
-  printf '%s %s\n' "$base" "$hash" >> "$MANIFEST"
+  printf '%s %s\n' "$base" "${todo_hash[$i]}" >> "$MANIFEST"
 
   git add "$OUT/$base"
-  echo "  encrypted: $base"
+  echo "  encrypted: $base  (key: $var)"
   count=$((count+1))
 done
 
@@ -93,5 +134,4 @@ if [ "$count" -gt 0 ]; then
   git add "$MANIFEST"
   echo "pre-commit: encrypted $count page(s) into $OUT/"
 fi
-
 exit 0

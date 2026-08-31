@@ -23,3 +23,7 @@ public-encrypted/_src/
 node_modules/
 
 .DS_Store
+
+# Maps page filenames to per-client password variables. The variable names
+# contain client names, so this file must never be published.
+.page-keys
