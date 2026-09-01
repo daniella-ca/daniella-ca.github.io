@@ -54,6 +54,22 @@ set -a; . ./.env; set +a
 : "${STATICRYPT_PASSWORD:?STATICRYPT_PASSWORD missing from .env}"
 : "${STATICRYPT_SALT:?STATICRYPT_SALT missing from .env}"
 
+# ENCRYPT_SECRET is only required if a page maps to a client slug (the derived
+# scheme). Pages on MASTER or a legacy CLIENT_*_PW variable do not need it, so
+# it is checked per page rather than up front.
+
+# Resolve a .page-keys value to the password for that page.
+#   MASTER          -> the master secret, internal pages only
+#   CLIENT_<X>_PW   -> legacy stored password, still honoured
+#   <client-slug>   -> derived from ENCRYPT_SECRET, nothing stored
+resolve_password() {
+  case "$1" in
+    MASTER)        printf '%s' "$STATICRYPT_PASSWORD" ;;
+    CLIENT_*_PW)   printf '%s' "${!1}" ;;
+    *)             ENCRYPT_SECRET="$ENCRYPT_SECRET" python3 bin/derive_passphrase.py "$1" ;;
+  esac
+}
+
 # staticrypt reads the salt from .staticrypt.json, and `--decrypt` REQUIRES
 # that file to exist - without it the encrypted pages cannot be recovered from
 # the command line. Regenerate it from .env so the salt stays fixed (stable
@@ -66,22 +82,11 @@ touch "$MANIFEST" "$KEYMAP"
 # ---------------------------------------------------------------- pass 1
 # Resolve and validate EVERY page before encrypting ANY of them, so a missing
 # mapping aborts with no half-finished work staged behind it.
-todo_src=(); todo_base=(); todo_var=(); todo_hash=()
+todo_src=(); todo_base=(); todo_var=(); todo_hash=(); todo_pw=()
 
 for src in "${sources[@]}"; do
   base="$(basename "$src")"
   var="$(awk -v f="$base" '$1==f {print $2; exit}' "$KEYMAP")"
-
-  # StatiCrypt uses a random IV, so identical input yields different output on
-  # every run. Re-encrypting unchanged pages would rewrite every file on every
-  # commit, so only re-encrypt when the plaintext or its key mapping changed.
-  # The manifest stores a salted hash, so it reveals nothing about the plaintext.
-  hash="$( { printf '%s%s' "$STATICRYPT_SALT" "${var:-UNMAPPED}"; cat "$src"; } \
-           | shasum -a 256 | awk '{print $1}' )"
-  prev="$(awk -v b="$base" '$1==b {print $2}' "$MANIFEST")"
-  if [ "$hash" = "$prev" ] && [ -f "$OUT/$base" ]; then
-    continue
-  fi
 
   # Fail closed. A client page must NEVER silently inherit the master password:
   # that would hand every client the key to every other client's report.
@@ -91,7 +96,7 @@ for src in "${sources[@]}"; do
     echo "  Client-facing pages must have their own password. There is" >&2
     echo "  deliberately no fallback to the master password." >&2
     echo "" >&2
-    echo "  For a client page, generate one:" >&2
+    echo "  For a client page, map it to their slug:" >&2
     echo "    bin/new-client-password <client-slug> $base" >&2
     echo "" >&2
     echo "  For your own internal page, opt in explicitly:" >&2
@@ -99,14 +104,42 @@ for src in "${sources[@]}"; do
     exit 1
   fi
 
-  if [ "$var" != "MASTER" ] && [ -z "${!var:-}" ]; then
-    echo "COMMIT BLOCKED - '$base' maps to $var, but $var is not set in .env." >&2
-    echo "  Generate it with: bin/new-client-password <client-slug>" >&2
-    echo "  Not falling back to the master password." >&2
+  case "$var" in
+    MASTER) ;;
+    CLIENT_*_PW)
+      if [ -z "${!var:-}" ]; then
+        echo "COMMIT BLOCKED - '$base' maps to $var, but $var is not set in .env." >&2
+        echo "  Not falling back to the master password." >&2
+        exit 1
+      fi ;;
+    *)
+      if [ -z "${ENCRYPT_SECRET:-}" ]; then
+        echo "COMMIT BLOCKED - '$base' maps to client '$var', whose passphrase is" >&2
+        echo "  derived, but ENCRYPT_SECRET is not set in .env." >&2
+        echo "  Without it the passphrase cannot be reproduced. Restore .env." >&2
+        exit 1
+      fi ;;
+  esac
+
+  if ! page_pw="$(resolve_password "$var")" || [ -z "$page_pw" ]; then
+    echo "COMMIT BLOCKED - could not resolve a password for '$base' (key: $var)." >&2
     exit 1
   fi
 
-  todo_src+=("$src"); todo_base+=("$base"); todo_var+=("$var"); todo_hash+=("$hash")
+  # StatiCrypt uses a random IV, so identical input yields different output on
+  # every run. Re-encrypting unchanged pages would rewrite every file on every
+  # commit, so only re-encrypt when the plaintext, its mapping, or the resolved
+  # password changed. Folding the password in means rotating ENCRYPT_SECRET
+  # re-encrypts every affected page instead of silently leaving them on the old
+  # one. The manifest stores a salted hash, so it reveals nothing.
+  hash="$( { printf '%s%s%s' "$STATICRYPT_SALT" "$var" "$page_pw"; cat "$src"; } \
+           | shasum -a 256 | awk '{print $1}' )"
+  prev="$(awk -v b="$base" '$1==b {print $2}' "$MANIFEST")"
+  if [ "$hash" = "$prev" ] && [ -f "$OUT/$base" ]; then
+    continue
+  fi
+
+  todo_src+=("$src"); todo_base+=("$base"); todo_var+=("$var"); todo_hash+=("$hash"); todo_pw+=("$page_pw")
 done
 
 # ---------------------------------------------------------------- pass 2
@@ -114,7 +147,7 @@ count=0
 for i in "${!todo_src[@]}"; do
   base="${todo_base[$i]}"; var="${todo_var[$i]}"
 
-  if [ "$var" = "MASTER" ]; then page_pw="$STATICRYPT_PASSWORD"; else page_pw="${!var}"; fi
+  page_pw="${todo_pw[$i]}"
 
   # Password goes via the environment, never argv - argv is visible in ps.
   # dotenv does not overwrite an already-set variable, so this wins over .env.
