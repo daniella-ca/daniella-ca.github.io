@@ -18,4 +18,6 @@ identifiers, account IDs, spend or revenue figures, or anything a client has
 not agreed to publish. Client-confidential work belongs in the private
 `daniella-workspace` repo instead.
 
-Credentials never belong in any repo — they live in `~/claude-work/.env`.
+Nothing secret is ever committed here. This repo does keep its own
+gitignored `.env` for the encryption secrets — see CLAUDE.md, "What must be
+backed up". It is separate from `~/claude-work/.env` and neither is tracked.

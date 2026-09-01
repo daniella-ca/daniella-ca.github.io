@@ -84,21 +84,49 @@ ciphertext remains in git history and in any cache, and stays crackable with
 the leaked password. Treat a leaked password as permanent exposure for anything
 already published.
 
-### The master secret
+### What must be backed up
 
-`.env` at the root of this repo holds three values, gitignored, mode 600:
+`.env` at the root of this repo, gitignored, mode 600. It holds three values,
+and they are **not** equally replaceable:
 
-    STATICRYPT_PASSWORD   master password, internal pages only
-    STATICRYPT_SALT       fixed salt, keeps encrypted output stable
-    ENCRYPT_SECRET        the key every client passphrase is derived from
+    ENCRYPT_SECRET        IRREPLACEABLE. Every client passphrase derives from
+                          it. Lose it and no client passphrase can ever be
+                          regenerated.
+
+    STATICRYPT_PASSWORD   IRREPLACEABLE. A stored random value protecting
+                          MASTER-mapped internal pages. Nothing derives it,
+                          so there is nothing to recompute it from.
+
+    STATICRYPT_SALT       Recoverable. An identical copy ships inside every
+                          published page, in the `staticryptConfig` block
+                          under `staticryptSaltUniqueVariableName`. Confirmed
+                          against this repo's demo page on 2026-09-01.
+
+**Two values are irreplaceable, not one.** Deriving passphrases removed the
+per-client secrets from `.env`; it did not remove the master password, which
+still protects every internal page. Backing up `.env` covers both, which is why
+the instruction is unchanged: keep a copy in a password manager.
+
+There is no reset. If both are lost, every encrypted page is permanently
+unreadable.
 
 These are **separate** from `~/claude-work/.env`, which is untouched by any of
 this.
 
-If `.env` is lost, every encrypted page becomes permanently unrecoverable and
-no client passphrase can be regenerated. There is no reset. Keep a copy in a
-password manager. It is now the only thing that must be backed up, because the
-file no longer grows a new secret per client.
+#### Not secret, but equally unbacked
+
+`public-encrypted/_src/*.html` holds the only copy of the plaintext. It is
+gitignored, so it never reaches GitHub and no clone contains it. Lose this
+machine and the plaintext survives only inside the published ciphertext, which
+needs the secrets above to open. If a page matters, keep its source somewhere
+other than this working copy.
+
+#### Replaceable, so not worth backing up
+
+- `.staticrypt.json` — the pre-commit hook regenerates it from the salt on
+  every run.
+- `.page-keys` — passphrases still derive without it. Losing it costs only the
+  record of which page belongs to which client, which you can rebuild.
 
 ### What encryption does NOT protect
 
