@@ -13,7 +13,11 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 SRC="public-encrypted/_src"
-OUT="public-encrypted"
+# Encrypted pages land at the repo ROOT so the served URL is /<name> with nothing
+# in front of it. GitHub Pages serves /<name> for <name>.html - verified against
+# /hello on this site, with a junk path returning 404 so the 200 meant something.
+# The plaintext source stays in public-encrypted/_src, which is gitignored.
+OUT="."
 MANIFEST=".encrypted-manifest"
 # Days the "Remember me" box stays valid. Folded into the manifest hash below so
 # that changing it re-encrypts every page, rather than leaving unchanged pages on
@@ -35,7 +39,12 @@ fi
 # ---------------------------------------------------------------- reminder
 # "Client-identifying" cannot be detected reliably, so this warns, not blocks.
 # It must run BEFORE the early exit below, or it never fires when _src/ is empty.
-if outside="$(printf '%s\n' "$staged" | grep -E '\.html$' | grep -v '^public-encrypted/')"; then
+# Encrypted output now sits at the root, so it is excluded by name from this
+# reminder rather than by directory - otherwise every publish would trip it.
+encrypted_names="$(awk '{print $1}' "$MANIFEST" 2>/dev/null | paste -sd'|' -)"
+if outside="$(printf '%s\n' "$staged" | grep -E '\.html$' \
+      | grep -v '^public-encrypted/' \
+      | { [ -n "$encrypted_names" ] && grep -Ev "^($encrypted_names)$" || cat; })"; then
   echo "NOTE - unencrypted HTML staged outside public-encrypted/:" >&2
   printf '  %s\n' $outside >&2
   echo "Confirm none contains client names, spend figures or account IDs." >&2
