@@ -15,6 +15,10 @@ cd "$ROOT"
 SRC="public-encrypted/_src"
 OUT="public-encrypted"
 MANIFEST=".encrypted-manifest"
+# Days the "Remember me" box stays valid. Folded into the manifest hash below so
+# that changing it re-encrypts every page, rather than leaving unchanged pages on
+# the old setting for however long it takes them to be edited.
+REMEMBER_DAYS="30"
 KEYMAP=".page-keys"
 
 # ---------------------------------------------------------------- guard 1
@@ -132,7 +136,7 @@ for src in "${sources[@]}"; do
   # password changed. Folding the password in means rotating ENCRYPT_SECRET
   # re-encrypts every affected page instead of silently leaving them on the old
   # one. The manifest stores a salted hash, so it reveals nothing.
-  hash="$( { printf '%s%s%s' "$STATICRYPT_SALT" "$var" "$page_pw"; cat "$src"; } \
+  hash="$( { printf '%s%s%s%s' "$STATICRYPT_SALT" "$var" "$page_pw" "$REMEMBER_DAYS"; cat "$src"; } \
            | shasum -a 256 | awk '{print $1}' )"
   prev="$(awk -v b="$base" '$1==b {print $2}' "$MANIFEST")"
   if [ "$hash" = "$prev" ] && [ -f "$OUT/$base" ]; then
@@ -152,7 +156,13 @@ for i in "${!todo_src[@]}"; do
   # Password goes via the environment, never argv - argv is visible in ps.
   # dotenv does not overwrite an already-set variable, so this wins over .env.
   STATICRYPT_PASSWORD="$page_pw" \
-    npx --no-install staticrypt "${todo_src[$i]}" -d "$OUT" --remember false --short >/dev/null
+    # --remember <days> puts a "Remember me" box on the password screen. Ticking it
+    # saves the salted + hashed password in that browser's localStorage, so the page
+    # opens without the passphrase until it expires. Not the plaintext, but it is
+    # the thing that decrypts the page: anyone who can use that browser profile can
+    # open the report. 30 days, so a device that changes hands closes itself off
+    # within a month. Was "false", which hid the box entirely.
+    npx --no-install staticrypt "${todo_src[$i]}" -d "$OUT" --remember "$REMEMBER_DAYS" --short >/dev/null
 
   awk -v b="$base" '$1!=b' "$MANIFEST" > "$MANIFEST.tmp"
   mv "$MANIFEST.tmp" "$MANIFEST"
