@@ -39,6 +39,8 @@
   #auth input { background: transparent; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 12px 14px; color: var(--paper); }
   #auth input:focus { outline: 2px solid var(--lime-deep); outline-offset: 1px; border-color: transparent; }
   #auth .err { color: var(--grey-1); min-height: 1.5em; font-size: 14px; }
+  #auth .remember { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--grey-1); cursor: pointer; user-select: none; }
+  #auth .remember input { width: 18px; height: 18px; margin: 0; padding: 0; border: 0; accent-color: var(--lime); cursor: pointer; }
 
   /* ---------------------------------------------------------------- shell */
   #app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
@@ -190,6 +192,7 @@
     <h1>What's <i>next</i>.</h1>
     <input type="email" id="email" placeholder="Email" required autocomplete="username">
     <input type="password" id="password" placeholder="Password" required autocomplete="current-password">
+    <label class="remember"><input type="checkbox" id="remember" checked> Remember me on this computer</label>
     <button type="submit" style="background:#C6FF3D;color:#0A0A0A;border:0;border-radius:999px;padding:12px 18px;font-weight:700">Sign in</button>
     <div class="err" id="authErr"></div>
   </form>
@@ -240,7 +243,15 @@
   var MUST_CAP = 3;
   var DONE_DAYS = 7;
 
-  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  // "Remember me" decides where the session lives: localStorage survives closing the browser,
+  // sessionStorage ends with the tab. The choice is kept so the same store is read next load.
+  function rememberFlag() { try { return localStorage.getItem("tb_remember") !== "no"; } catch (e) { return true; } }
+  function makeClient(remember) {
+    var store; try { store = remember ? window.localStorage : window.sessionStorage; } catch (e) { store = undefined; }
+    return window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { storage: store, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } });
+  }
+  var sbRemember = rememberFlag();
+  var sb = makeClient(sbRemember);
   var state = { tasks: [], view: "today", user: null, timer: null };
   var drag = { id: null };
   var $ = function (s, r) { return (r || document).querySelector(s); };
@@ -762,8 +773,12 @@
     state.user = session.user; $("#auth").hidden = true; $("#app").hidden = false; load();
     clearInterval(state.timer); state.timer = setInterval(load, 60000);
   }
+  $("#remember").checked = sbRemember;
   $("#authForm").addEventListener("submit", function (e) {
     e.preventDefault(); $("#authErr").textContent = "";
+    var remember = $("#remember").checked;
+    try { localStorage.setItem("tb_remember", remember ? "yes" : "no"); } catch (x) {}
+    if (remember !== sbRemember) { sbRemember = remember; sb = makeClient(remember); }
     sb.auth.signInWithPassword({ email: $("#email").value.trim(), password: $("#password").value }).then(function (r) {
       if (r.error) { $("#authErr").textContent = r.error.message; return; }
       showApp(r.data.session);
